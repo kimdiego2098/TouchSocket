@@ -30,7 +30,9 @@ public sealed class WaitHandlePool<T>
     private readonly int m_maxSign;
     private readonly int m_minSign;
     private readonly Action<int> m_remove;
+    private readonly Action<AsyncWaitData<T>> m_return;
     private readonly ConcurrentDictionary<int, AsyncWaitData<T>> m_waitDic = new();
+    private readonly ConcurrentQueue<AsyncWaitData<T>> m_pool = new();
     private int m_currentSign;
 
     /// <summary>
@@ -48,6 +50,7 @@ public sealed class WaitHandlePool<T>
         this.m_currentSign = minSign;
         this.m_maxSign = maxSign;
         this.m_remove = this.Remove;
+        this.m_return = this.ReturnToPool;
     }
 
     /// <summary>
@@ -84,15 +87,15 @@ public sealed class WaitHandlePool<T>
     {
         if (autoSign)
         {
-            result.Sign = this.GetSign();
+            result.Sign = GetSign();
         }
-        var waitDataAsyncSlim = new AsyncWaitData<T>(result.Sign, this.m_remove, result);
-
-        if (!this.m_waitDic.TryAdd(result.Sign, waitDataAsyncSlim))
+        var waitData = GetOrCreate(result.Sign, result);
+        if (!m_waitDic.TryAdd(result.Sign, waitData))
         {
             ThrowHelper.ThrowInvalidOperationException($"The sign '{result.Sign}' is already in use.");
         }
-        return waitDataAsyncSlim;
+        return waitData;
+
     }
 
     /// <summary>
@@ -107,13 +110,13 @@ public sealed class WaitHandlePool<T>
     /// </remarks>
     public AsyncWaitData<T> GetWaitDataAsync(out int sign)
     {
-        sign = this.GetSign();
-        var waitDataAsyncSlim = new AsyncWaitData<T>(sign, this.m_remove, default);
-        if (!this.m_waitDic.TryAdd(sign, waitDataAsyncSlim))
+        sign = GetSign();
+        var waitData = GetOrCreate(sign, default);
+        if (!m_waitDic.TryAdd(sign, waitData))
         {
             ThrowHelper.ThrowInvalidOperationException($"The sign '{sign}' is already in use.");
         }
-        return waitDataAsyncSlim;
+        return waitData;
     }
 
     /// <summary>
@@ -185,5 +188,21 @@ public sealed class WaitHandlePool<T>
     private void Remove(int sign)
     {
         this.m_waitDic.TryRemove(sign, out _);
+    }
+
+
+
+    private AsyncWaitData<T> GetOrCreate(int sign, T pending)
+    {
+        if (m_pool.TryDequeue(out var item))
+        {
+            item.Reset(sign, pending);
+            return item;
+        }
+        return new AsyncWaitData<T>(sign, m_remove, this.m_return, pending);
+    }
+    private void ReturnToPool(AsyncWaitData<T> item)
+    {
+        m_pool.Enqueue(item);
     }
 }
